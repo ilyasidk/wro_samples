@@ -46,13 +46,13 @@ This repo keeps the essentials: **line following, gyro-stabilized straight & tur
 These are **illustrations** of how the library moves/controls. If you put the images into `assets/`, the links will work:
 
 - **Cosine-smoothed accel/decel** (speed vs distance):  
-  ![accel_move_profile](assets/accel_move_profile.png)
+  ![accel_move_profile](accel_move_profile.png)
 - **Acceleration smoothness** (finite difference):  
-  ![accel_move_accel_estimate](assets/accel_move_accel_estimate.png)
+  ![accel_move_accel_estimate](ccel_move_accel_estimate.png)
 - **Triangular vs trapezoidal velocity profiles**:  
-  ![tri_vs_trap](assets/tri_vs_trap.png)
+  ![tri_vs_trap](tri_vs_trap.png)
 - **PD heading step response (concept)**:  
-  ![pd_heading_step](assets/pd_heading_step.png)
+  ![pd_heading_step](pd_heading_step.png)
 
 ---
 
