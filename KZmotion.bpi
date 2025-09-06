@@ -1,0 +1,1783 @@
+@s1 =0
+@s2 =0
+s1= 0
+s2= 0
+kp = 0.8   ' коэффициент пропорциональности для ПД-регулятора
+ki = 0     ' коэффициент интегрирования (пока не используется)
+kd = 2     ' коэффициент дифференцирования для ПД-регулятора
+kp_align = 3  ' коэффициент пропорциональности для выравнивания
+kd_align = 6  ' коэффициент дифференцирования для выравнивания
+@OldE = 0     ' предыдущая ошибка для расчета дифференциальной составляющей
+kB = 0        ' множитель направления для мотора B
+kC = 0        ' множитель направления для мотора C
+curr_speed = 0 ' текущая скорость
+speed = 30     ' целевая скорость
+@DestEnc = 180 ' целевое значение энкодера для гладкого ускорения
+@prevTime = 0  ' время предыдущего измерения для плавного ускорения
+@prevEnc = 0   ' значение энкодера при предыдущем измерении
+s1exists = "true"  ' наличие первого датчика цвета
+s2exists = "true"  ' наличие второго датчика цвета
+integral = 0       ' интегральная составляющая регулятора
+@avgS = 0          ' среднее значение датчиков для компаса
+
+' ============= НАСТРОЙКА БАЗЫ РОБОТА =============
+
+'''' Задать для управления 2 больших мотора. В - слева, С - справа
+Function LargeBase()
+  @kB = 1
+  @kC = 1
+EndFunction
+
+'''' Задать для управления 2 средних мотора. В - слева, С - справа
+Function MiddleBase()
+  @kB = -1
+  @kC = 1
+EndFunction
+
+'''' Задать для управления 2 средних мотора с шестерёнками. В - слева, С - справа
+Function MiddleBase2()
+  @kB = 1
+  @kC = -1
+EndFunction
+
+'''' Проверка, что все необходимые переменные заданы корректно
+Function Check()
+  error = ""
+  If @kB = 0 Or @kC = 0 Then
+    error = "kb,kc=0 | Не выбран тип базы робота"
+  EndIf
+  If error <> "" Then
+    ' вывод ошибки
+    Speaker.Play(100, "Error alarm")
+    EV3.SetLEDColor("RED", "FLASH")
+    LCD_str(error)
+    ' ждём нажатия любой кнопки
+    While Buttons.Current <> ""
+    EndWhile
+    While Buttons.Current = ""
+    EndWhile
+    Program.End()
+  EndIf
+EndFunction
+
+' ============= ДВИЖЕНИЕ ПО ЛИНИИ =============
+
+'''' Движение по линии до Т-перекрёстка (один датчик видит черную линию)
+Function LineT()
+  Check()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    reg()
+    ' остановка на Т-перекрёстке: один из датчиков видит маленькое значения яркости
+    If @s1 < 20 Or @s2 < 20 Then
+      exit = 1
+    EndIf
+  EndWhile
+  StopPower()
+EndFunction
+
+'''' Движение по линии до Х-перекрёстка (оба датчика видят черную линию)
+Function LineX()
+  Check()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    reg()
+    ' остановка на Х-перекрёстке: оба датчика видят маленькое значения яркости
+    If @s1 < 20 And @s2 < 20 Then
+      exit = 1
+    EndIf
+  EndWhile
+  StopPower()
+EndFunction
+
+'''' ПИД регулятор для движения по линии (датчики на портах 1 и 2)
+Function reg()
+  If @s1exists = "true" Then
+    @s1 = Sensor.ReadPercent(1)
+  EndIf
+  If @s2exists = "true" Then
+    @s2 = Sensor.ReadPercent(2)
+  EndIf
+  
+  ' Расчет ошибки и составляющих ПИД-регулятора
+  E = @s1 - @s2
+  P = E * @kp
+  I = @integral + (E * @ki)
+  D = (E - @OldE) * @kd
+  A = P + I + D
+  OldE = E
+  integral = I
+  
+  ' Плавное ускорение и вывод на экран значения регулятора
+  SmoothSpeed()
+  LCD_int(A)
+  
+  ' Управление моторами с учетом направления вращения
+  MotorB.StartPower((@curr_speed + A) * @kB)
+  MotorC.StartPower((@curr_speed - A) * @kC)
+EndFunction
+
+
+'''' Поворот направо на перекрёстке
+Function LineRight()
+  Check()
+  ' Поворот до обнаружения черной линии правым датчиком
+  While Sensor.ReadPercent(2) > 20
+    SmoothSpeed()
+    MotorB.StartPower(@curr_speed * @kB)
+    MotorC.StartPower(-@curr_speed * @kC)
+  EndWhile
+  StopPower()
+EndFunction
+
+'''' Поворот налево на перекрёстке
+Function LineLeft()
+  Check()
+  ' Поворот до обнаружения черной линии левым датчиком
+  While Sensor.ReadPercent(1) > 20
+    SmoothSpeed()
+    MotorB.StartPower(-@curr_speed * @kB)
+    MotorC.StartPower(@curr_speed * @kC)
+  EndWhile
+  StopPower()
+EndFunction
+
+' ============= УПРАВЛЕНИЕ МОТОРАМИ =============
+
+'''' Полная остановка моторов
+Function Stop()
+  Motor.Stop("BC", "true")
+  @curr_speed = 0
+  @prevEnc = 0
+  @prevTime = 0
+EndFunction
+
+'''' Остановка моторов без тормоза
+Function StopPower()
+  MotorB.StartPower(0)
+  MotorC.StartPower(0)
+  @curr_speed = 0
+  @prevEnc = 0
+  @prevTime = 0
+EndFunction
+
+'''' Движение по линии на заданное расстояние DestEnc
+Function LineEncoder(in number DestEnc)
+  Check()
+  ' Сброс значений энкодеров
+  Motor.ResetCount("BC")
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    reg()
+    encB = Math.abs(MotorB.GetTacho())
+    encC = Math.abs(MotorC.GetTacho())
+    avg = (encB + encC)/2
+    ' Остановка при достижении заданного расстояния
+    If avg > DestEnc Then
+      exit = 1
+      StopPower()
+    EndIf
+  EndWhile
+EndFunction
+
+'''' Движение по линии на заданное расстояние (относительный энкодер)
+Function LineEncoder2(in number DestEnc)
+  Check()
+  ' Запоминаем начальное значение энкодеров
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    reg()
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    avg = (encB + encC)/2
+    ' Остановка при достижении заданного расстояния
+    If avg > DestEnc Then
+      exit = 1
+    EndIf
+  EndWhile
+EndFunction
+
+'''' Движение прямо на заданное расстояние
+Function vpered(in number DestEnc)
+  Check()
+  ' Запоминаем начальное значение энкодеров
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    ' Выравнивание по энкодерам
+    E = encC * @kC - encB * @kB
+    P = E * @kp_align * 2
+    D = (E - @OldE) * @kd_align * 2
+    A = P + D
+    @OldE = E
+    SmoothSpeed()
+    MotorB.StartPower((@curr_speed + A) * @kB)
+    MotorC.StartPower((@curr_speed - A) * @kC)
+    avg = (Math.Abs(encB) + Math.Abs(encC))/2
+    ' Остановка при достижении заданного расстояния
+    If avg > DestEnc Then
+      exit = 1
+    EndIf
+  EndWhile
+EndFunction
+
+'''' Движение назад на заданное расстояние
+Function nazad(in number DestEnc)
+  Check()
+  ' Запоминаем начальное значение энкодеров
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    ' Без Math.Abs для движения назад
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    ' Выравнивание по энкодерам
+    E = encC * @kC - encB * @kB
+    P = E * @kp_align * 2
+    D = (E - @OldE) * @kd_align * 2
+    A = P + D
+    @OldE = E
+    SmoothSpeed()
+    MotorB.StartPower((@curr_speed + A) * -@kB)
+    MotorC.StartPower((@curr_speed - A) * @kC)
+    avg = (Math.Abs(encB) + Math.Abs(encC))/2
+    ' Остановка при достижении заданного расстояния
+    If avg > DestEnc Then
+      exit = 1
+    EndIf
+  EndWhile
+EndFunction
+
+'''' Движение по линии на время в милисекундах
+Function LineTime(in number Milis)
+  Check()
+  ' Измеряем относительное время
+  startTime = Time.Get2()
+  @OldE = 0
+  While Time.Get2() - startTime < Milis
+    reg()
+  EndWhile
+  StopPower()
+EndFunction
+
+'''' Поворот направо на определённый угол
+Function Right(in number DestEnc)
+  Check()
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    SmoothSpeed()
+    MotorB.StartPower(@curr_speed * @kB)
+    MotorC.StartPower(-@curr_speed * @kC)
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    ' Суммируем с ABS - при вращении вокруг оси
+    avg = (Math.Abs(encB) + Math.Abs(encC))/2 /2
+    If avg > DestEnc Then
+      exit = 1
+    EndIf
+  EndWhile
+EndFunction
+
+'''' Поворот налево на определённый угол
+Function Left(in number DestEnc)
+  Check()
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    SmoothSpeed()
+    MotorB.StartPower(-@curr_speed * @kB)
+    MotorC.StartPower(@curr_speed * @kC)
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    ' Суммируем с ABS - при вращении вокруг оси
+    avg = (Math.Abs(encB) + Math.Abs(encC))/2 /2
+    If avg > DestEnc Then
+      exit = 1
+      StopPower()
+    EndIf
+  EndWhile
+EndFunction
+
+' ============= УПРАВЛЕНИЕ СКОРОСТЬЮ =============
+
+'''' Плавное увеличение скорости
+Function SmoothSpeed()
+  max_speed = @speed
+  If @curr_speed < max_speed Then
+    If @prevTime = 0 Then
+      @prevTime = Time.Get2()
+    EndIf
+    If @prevEnc = 0 Then
+      encB = MotorB.GetTacho()
+      encC = MotorC.GetTacho()
+      @prevEnc = (Math.Abs(encB) + Math.Abs(encC))/2
+    EndIf
+    delta_time = Time.Get2() - @prevTime
+    If delta_time > 10 Then
+      encB = MotorB.GetTacho()
+      encC = MotorC.GetTacho()
+      enc = (Math.Abs(encB) + Math.Abs(encC))/2
+      delta_enc = enc - @prevEnc
+      If delta_enc > @DestEnc Then
+        delta_enc = @DestEnc
+      EndIf
+      delta_speed = delta_enc * max_speed / @DestEnc
+      If delta_speed < 1 Then
+        delta_speed = 1 ' Избегаем застревания с нулевым приращением
+      EndIf
+      @curr_speed += delta_speed
+      ' Заполняем предыдущие значения
+      @prevTime = Time.Get2()
+      @prevEnc = enc
+    EndIf
+  Else
+    @curr_speed = max_speed
+  EndIf
+EndFunction
+
+'''' Плавная остановка с понижением скорости
+Function SmoothStop()
+  now_speed = ( @speed + (MotorB.GetSpeed() + MotorC.GetSpeed()) / 2  )/2
+  For i = 2 To 1 Step -1
+    drop = now_speed * i / 3.0
+    MotorB.StartPower(@kB * drop)
+    MotorC.StartPower(@kC * drop)
+    t = Time.Get2()
+    exit = 0
+    While exit = 0
+      If (MotorB.GetSpeed() + MotorC.GetSpeed()) / 2 <= drop Then
+        exit = 1
+      EndIf
+      If Time.Get2() - t > 10 Then
+        exit = 1
+      EndIf
+    EndWhile
+  EndFor
+  MotorB.StartPower(0)
+  MotorC.StartPower(0)
+  @curr_speed = 0
+  @prevTime = 0
+  @prevEnc = 0
+EndFunction
+
+
+
+' ============= ОЖИДАНИЕ И ВЫВОД =============
+
+'''' Ожидание нажатия кнопки
+Function WaitButton(in string B)
+  ' Ждём, пока пользователь руку с этой кнопки уберёт
+  While Buttons.Current = B
+  EndWhile
+  ' Ожидание нажатия
+  While Buttons.Current <> B
+  EndWhile
+EndFunction
+
+'''' Выводит одно число на экран
+Function LCD_int(in number A)
+  LCD.StopUpdate()
+  LCD.Clear()
+  LCD.Write(20, 50, A)
+  LCD.Update()
+  Program.Delay(5)
+EndFunction
+
+'''' Выводит строку на экран
+Function LCD_str(in string A)
+  LCD.StopUpdate()
+  LCD.Clear()
+  LCD.Write(20, 50, A)
+  LCD.Update()
+  Program.Delay(5)
+EndFunction
+
+' ============= СПЕЦИФИЧЕСКИЕ ФУНКЦИИ ДЛЯ ВРО =============
+
+'''' ПИД регулятор для датчиков на портах 3 и 4
+Function reg2()
+  @s1 = Sensor.ReadPercent(3)
+  @s2 = Sensor.ReadPercent(4)
+  E = @s1 - @s2
+  P = E * @kp
+  I = @integral + (E * @ki)
+  D = (E - @OldE) * @kd
+  A = P + I + D
+  OldE = E
+  @integral = I
+  SmoothSpeed()
+  LCD_int(A)
+  MotorB.StartPower((@curr_speed + A) * @kB)
+  MotorC.StartPower((@curr_speed - A) * @kC)
+EndFunction
+
+'''' Движение по линии с датчиками на портах 3 и 4
+Function CompasEncoder2(in number DestEnc)
+  Check()
+  ' Запоминаем начальное значение энкодеров
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    reg2()
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    avg = (encB + encC)/2
+    If avg > DestEnc Then
+      exit = 1
+      StopPower()
+    EndIf
+  EndWhile
+EndFunction
+
+'''' Движение прямо по компасу (датчик на порту 3)
+Function CompasEncoder1(in number DestEnc, in number angle)
+  Check()
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    @s1 = Sensor.ReadPercent(3)
+    
+    ' Регулировка по компасу
+    E = angle - s1
+    P = E * kp
+    I = integral + (E * ki)
+    D = (E - OldE) * kd
+    A = P + I + D
+    OldE = E
+    integral = I
+    SmoothSpeed()
+    LCD_int(A)
+    MotorB.StartPower((@curr_speed + A) * @kB)
+    MotorC.StartPower((@curr_speed - A) * @kC)
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    
+    avg = (encB + encC)/2
+    If avg > DestEnc Then
+      exit = 1
+      StopPower()
+    EndIf
+  EndWhile
+EndFunction
+
+' ============= ФУНКЦИИ ДЛЯ ВРО =============
+
+'''' Чекер для определения цвета блоков для ВРО
+'''' Rast - расстояние между блоками
+'''' firstRast - расстояние до первого блока
+'''' Возвращает значения синего цвета для каждого блока
+Function checker(in number Rast, in number firstRast, out number brick1b, out number brick2b, out number brick3b, out number brick4b)
+  Check()
+  
+  DestEnc = Rast * 4 + firstRast + 10
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  
+  ' Инициализация переменных для хранения данных о цвете
+  brick1r = 0
+  brick1g = 0
+  brick1b = 0
+  brick1w = 0
+  
+  brick2r = 0
+  brick2g = 0
+  brick2b = 0
+  brick2w = 0
+  
+  brick3r = 0
+  brick3g = 0
+  brick3b = 0
+  brick3w = 0
+  
+  brick4r = 0
+  brick4g = 0
+  brick4b = 0
+  brick4w = 0
+  
+  While exit = 0
+    reg()
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    avg = (encB + encC)/2
+    
+    ' Чтение цвета блоков на определенных расстояниях
+    If avg >= firstRast - 5 And avg <= firstRast + 5 Then
+      Color.GetRGBW(4, brick1r, brick1g, brick1b, brick1w)
+      
+    ElseIf avg >= firstRast + Rast - 5 And avg <= firstRast + Rast + 5 Then
+      Color.GetRGBW(4, brick2r, brick2g, brick2b, brick2w)
+      
+    ElseIf avg >= firstRast + 2*Rast - 5 And avg <= firstRast + 2*Rast + 5 Then
+      Color.GetRGBW(4, brick3r, brick3g, brick3b, brick3w)
+      
+    ElseIf avg >= firstRast + 3*Rast - 5 And avg <= firstRast + 3*Rast + 5 Then
+      Color.GetRGBW(4, brick4r, brick4g, brick4b, brick4w)
+      
+    EndIf
+    
+    If avg > DestEnc Then
+      exit = 1
+      StopPower()
+    EndIf
+  EndWhile
+  
+EndFunction
+
+' ============= ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ =============
+
+'''' Калибровка датчиков цвета на портах 1 и 2
+'''' Выполняет калибровку для определения черной и белой линии
+'''' Возвращает средние значения для черного и белого цвета
+Function CalibrateColorSensors(out number blackValue, out number whiteValue)
+  LCD.StopUpdate()
+  LCD.Clear()
+  LCD.Write(10, 20, "Поместите робота на ЧЕРНУЮ линию")
+  LCD.Write(10, 40, "Нажмите Enter для начала калибровки")
+  LCD.Update()
+  
+  ' Ожидание нажатия Enter
+  WaitButton("ENTER")
+  
+  ' Замер черной линии
+  black1 = 0
+  black2 = 0
+  For i = 1 To 10
+    black1 = black1 + Sensor.ReadPercent(1)
+    black2 = black2 + Sensor.ReadPercent(2)
+    Program.Delay(50)
+  EndFor
+  black1 = black1 / 10
+  black2 = black2 / 10
+  blackValue = (black1 + black2) / 2
+  
+  LCD.StopUpdate()
+  LCD.Clear()
+  LCD.Write(10, 20, "Поместите робота на БЕЛУЮ поверхность")
+  LCD.Write(10, 40, "Нажмите Enter для продолжения")
+  LCD.Update()
+  
+  ' Ожидание нажатия Enter
+  WaitButton("ENTER")
+  
+  ' Замер белой поверхности
+  white1 = 0
+  white2 = 0
+  For i = 1 To 10
+    white1 = white1 + Sensor.ReadPercent(1)
+    white2 = white2 + Sensor.ReadPercent(2)
+    Program.Delay(50)
+  EndFor
+  white1 = white1 / 10
+  white2 = white2 / 10
+  whiteValue = (white1 + white2) / 2
+  
+  ' Настройка порогового значения
+  threshold = (blackValue + whiteValue) / 2
+  
+  LCD.StopUpdate()
+  LCD.Clear()
+  LCD.Write(10, 20, "Калибровка завершена")
+  LCD.Write(10, 40, "Черный: " + blackValue)
+  LCD.Write(10, 60, "Белый: " + whiteValue)
+  LCD.Write(10, 80, "Порог: " + threshold)
+  LCD.Update()
+  
+  Program.Delay(2000)
+EndFunction
+
+'''' Движение по дуге/окружности с заданным радиусом
+'''' radius - радиус дуги (положительное или отрицательное число для разных направлений)
+'''' angle - угол дуги в градусах
+Function Arc(in number radius, in number angle)
+  Check()
+  
+  ' Расчет соотношения скоростей для заданного радиуса
+  ' Если радиус отрицательный - поворот налево, иначе - направо
+  direction = 1
+  If radius < 0 Then
+    radius = Math.Abs(radius)
+    direction = -1
+  EndIf
+  
+  ' Колесная база робота (расстояние между центрами колес)
+  wheelBase = 12 ' примерное значение, может потребоваться настройка
+  
+  ' Расчет соотношения скоростей для внешнего и внутреннего колеса
+  ratio = (radius - wheelBase/2) / (radius + wheelBase/2)
+  
+  ' Расчет необходимого расстояния для внешнего колеса
+  circumference = 2 * Math.Pi * radius
+  distance = circumference * angle / 360
+  
+  ' Примерное количество тиков энкодера на 1 см
+  ticksPerCm = 20 ' может потребоваться настройка
+  encoderTicks = distance * ticksPerCm
+  
+  ' Сброс энкодеров
+  Motor.ResetCount("BC")
+  
+  ' Установка скоростей с учетом направления поворота
+  If direction = 1 Then
+    ' Поворот направо
+    speedB = @speed
+    speedC = @speed * ratio
+  Else
+    ' Поворот налево
+    speedB = @speed * ratio
+    speedC = @speed
+  EndIf
+  
+  ' Запуск движения
+  MotorB.StartPower(speedB * @kB)
+  MotorC.StartPower(speedC * @kC)
+  
+  ' Контроль движения по энкодеру внешнего колеса
+  exit = 0
+  While exit = 0
+    If direction = 1 Then
+      encValue = Math.Abs(MotorB.GetTacho())
+    Else
+      encValue = Math.Abs(MotorC.GetTacho())
+    EndIf
+    
+    If encValue >= encoderTicks Then
+      exit = 1
+    EndIf
+  EndWhile
+  
+  StopPower()
+EndFunction
+
+
+
+'''' Движение до объекта с помощью ультразвукового датчика
+'''' port - порт ультразвукового датчика
+'''' targetDistance - расстояние до объекта, при котором робот останавливается
+Function MoveToObject(in number port, in number targetDistance)
+  Check()
+  
+  ' Запуск движения вперед
+  @curr_speed = @speed / 2 ' уменьшаем скорость для безопасности
+  MotorB.StartPower(@curr_speed * @kB)
+  MotorC.StartPower(@curr_speed * @kC)
+  
+  ' Контроль расстояния
+  exit = 0
+  While exit = 0
+    currentDistance = Sensor.ReadRawValue(port, 0)
+    
+    ' Уменьшаем скорость при приближении к объекту
+    If currentDistance < targetDistance * 2 Then
+      @curr_speed = @speed / 4
+      MotorB.StartPower(@curr_speed * @kB)
+      MotorC.StartPower(@curr_speed * @kC)
+    EndIf
+    
+    ' Останавливаемся при достижении целевого расстояния
+    If currentDistance <= targetDistance Then
+      exit = 1
+    EndIf
+    
+    Program.Delay(10)
+  EndWhile
+  
+  StopPower()
+EndFunction
+
+'''' Ожидание нажатия кнопки касания
+'''' port - порт датчика касания
+Function WaitTouch(in number port)
+  exit = 0
+  While exit = 0
+    If Sensor.ReadRawValue(port, 0) = 1 Then
+      exit = 1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+  
+  ' Ожидание отпускания кнопки
+  While Sensor.ReadRawValue(port, 0) = 1
+    Program.Delay(10)
+  EndWhile
+EndFunction
+
+'''' Движение по гироскопу с поддержанием заданного угла
+'''' port - порт гироскопического датчика
+'''' distance - расстояние для движения в тиках энкодера
+'''' targetAngle - целевой угол для поддержания (0 - прямо)
+Function GyroStraight(in number port, in number distance, in number targetAngle)
+  Check()
+  
+  ' Сброс энкодеров
+  Motor.ResetCount("BC")
+  
+  ' Коэффициенты ПИД-регулятора для гироскопа
+  kp_gyro = 2
+  ki_gyro = 0
+  kd_gyro = 5
+  
+  integral_gyro = 0
+  lastError = 0
+  
+  exit = 0
+  While exit = 0
+    ' Чтение текущего угла и расчет ошибки
+    currentAngle = Sensor.ReadRawValue(port, 0)
+    error = targetAngle - currentAngle
+    
+    ' ПИД-регулятор
+    P = error * kp_gyro
+    integral_gyro = integral_gyro + error
+    I = integral_gyro * ki_gyro
+    D = (error - lastError) * kd_gyro
+    correction = P + I + D
+    lastError = error
+    
+    ' Ограничение коррекции
+    If correction > 50 Then
+      correction = 50
+    ElseIf correction < -50 Then
+      correction = -50
+    EndIf
+    
+    ' Применение коррекции к моторам
+    SmoothSpeed()
+    MotorB.StartPower((@curr_speed - correction) * @kB)
+    MotorC.StartPower((@curr_speed + correction) * @kC)
+    
+    ' Проверка пройденного расстояния
+    encB = Math.Abs(MotorB.GetTacho())
+    encC = Math.Abs(MotorC.GetTacho())
+    avg = (encB + encC) / 2
+    
+    If avg >= distance Then
+      exit = 1
+    EndIf
+    
+    Program.Delay(10)
+  EndWhile
+  
+  StopPower()
+EndFunction
+
+'''' Поворот по гироскопу на заданный угол
+'''' port - порт гироскопического датчика
+'''' targetAngle - целевой угол поворота (положительный - направо, отрицательный - налево)
+Function GyroTurn(in number port, in number targetAngle)
+  Check()
+  
+  ' Получение текущего угла
+  startAngle = Sensor.ReadRawValue(port, 0)
+  finalAngle = startAngle + targetAngle
+  
+  ' Определение направления поворота
+  If targetAngle > 0 Then
+    ' Поворот направо
+    MotorB.StartPower(30 * @kB)
+    MotorC.StartPower(-30 * @kC)
+  Else
+    ' Поворот налево
+    MotorB.StartPower(-30 * @kB)
+    MotorC.StartPower(30 * @kC)
+  EndIf
+  
+  ' Ожидание достижения угла
+  exit = 0
+  While exit = 0
+    currentAngle = Sensor.ReadRawValue(port, 0)
+    
+    If targetAngle > 0 Then
+      If currentAngle >= finalAngle Then
+        exit = 1
+      EndIf
+    Else
+      If currentAngle <= finalAngle Then
+        exit = 1
+      EndIf
+    EndIf
+    
+    ' Замедление при приближении к целевому углу
+    remainingAngle = Math.Abs(finalAngle - currentAngle)
+    If remainingAngle < 20 Then
+      If targetAngle > 0 Then
+        MotorB.StartPower(15 * @kB)
+        MotorC.StartPower(-15 * @kC)
+      Else
+        MotorB.StartPower(-15 * @kB)
+        MotorC.StartPower(15 * @kC)
+      EndIf
+    EndIf
+    
+    Program.Delay(10)
+  EndWhile
+  
+  StopPower()
+  Program.Delay(100) ' Небольшая пауза для стабилизации
+EndFunction
+
+
+Function accel_move(in number totalDistance, in number accelDistance, in number decelDistance, in number minSpeed, in number maxSpeed)
+  
+
+  
+  
+
+  Check()
+  ' Сброс и инициализация
+  Motor.ResetCount("BC")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+
+  While exit = 0
+    ' Текущее пройденное расстояние
+    encB_abs = Math.Abs(MotorB.GetTacho() - StartB)
+    encC_abs = Math.Abs(MotorC.GetTacho() - StartC)
+    avgDist = (encB_abs + encC_abs) / 2
+    remainingDist = totalDistance - avgDist
+
+    ' Расчет целевой скорости для текущего шага с плавным переходом
+    current_target_speed = 0
+    If accelDistance > 0 And avgDist < accelDistance Then
+      ' Косинусоидальное сглаживание ускорения: S-образная кривая
+      ratio = avgDist / accelDistance
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * Math.Pi)) / 2
+    ElseIf decelDistance > 0 And remainingDist < decelDistance Then
+      ' Косинусоидальное сглаживание замедления
+      ratio = remainingDist / decelDistance
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * math.pi)) / 2
+    Else
+      ' Фаза постоянной скорости
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Ограничение рассчитанной скорости
+    If current_target_speed < minSpeed Then
+      current_target_speed = minSpeed
+    EndIf
+    If current_target_speed > maxSpeed Then
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Если почти доехали, гарантируем минимальную скорость (не останавливаясь полностью)
+    If remainingDist <= 2 Then
+       current_target_speed = minSpeed
+      If current_target_speed < 1 Then 
+        current_target_speed = 1 
+      EndIf
+    EndIf
+
+    ' Выравнивание по энкодерам (ПД-регулятор)
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    E = encC * @kC - encB * @kB
+    P = E * @kp
+    D = (E - @OldE) * @kd
+    A = P + D
+    @OldE = E
+
+    ' Управление моторами
+    MotorB.StartPower((current_target_speed + A) * @kB)
+    MotorC.StartPower((current_target_speed - A) * @kC)
+
+    ' Условие выхода
+    If avgDist >= totalDistance Then
+      exit = 1
+    EndIf
+
+    Program.Delay(10)
+  EndWhile
+
+  StopPower()
+EndFunction
+Function accel_move_back(in number totalDistance, in number accelDistance, in number decelDistance, in number minSpeed, in number maxSpeed)
+  Check()
+  ' Сброс и инициализация
+  Motor.ResetCount("BC")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+
+  While exit = 0
+    ' Текущее пройденное расстояние (при движении назад)
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    encB_abs = Math.Abs(encB)
+    encC_abs = Math.Abs(encC)
+    avgDist = (encB_abs + encC_abs) / 2
+    remainingDist = totalDistance - avgDist
+
+    ' Расчет целевой скорости для текущего шага с плавным переходом
+    current_target_speed = 0
+    If accelDistance > 0 And avgDist < accelDistance Then
+      ' Косинусоидальное сглаживание ускорения: S-образная кривая
+      ratio = avgDist / accelDistance
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * Math.Pi)) / 2
+    ElseIf decelDistance > 0 And remainingDist < decelDistance Then
+      ' Косинусоидальное сглаживание замедления
+      ratio = remainingDist / decelDistance
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * math.pi)) / 2
+    Else
+      ' Фаза постоянной скорости
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Ограничение рассчитанной скорости
+    If current_target_speed < minSpeed Then
+      current_target_speed = minSpeed
+    EndIf
+    If current_target_speed > maxSpeed Then
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Если почти доехали, гарантируем минимальную скорость
+    If remainingDist <= 2 Then
+       current_target_speed = minSpeed
+      If current_target_speed < 1 Then 
+        current_target_speed = 1 
+      EndIf
+    EndIf
+
+    ' Выравнивание по энкодерам (ПД-регулятор)
+    ' При движении назад формула ошибки остается той же, так как знаки encB и encC меняются одновременно
+    E = encC * @kC - encB * @kB
+    P = E * @kp
+    D = (E - @OldE) * @kd
+    A = P + D
+    @OldE = E
+
+    ' Управление моторами (отрицательная мощность для движения назад)
+    MotorB.StartPower((current_target_speed - A) * -@kB)
+    MotorC.StartPower((current_target_speed + A) * -@kC)
+
+    ' Условие выхода
+    If avgDist >= totalDistance Then
+      exit = 1
+    EndIf
+
+    Program.Delay(10)
+  EndWhile
+
+  StopPower()
+EndFunction
+
+Function compasT(in number DestEnc, in number speed , in number curr_angle)
+  Motor.ResetCount("A")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  StartA = MotorA.GetTacho()
+
+  @OldE = 0
+  exit = 0
+  kp=0.4
+  kd=0.1
+  OldE=0
+  While exit = 0
+    
+    Gyro.getheading(2,0, angle,angle2)
+    
+    E = curr_angle - angle
+    P = E * kp
+    D = (E - OldE) * kd
+    A = P + D
+
+    'if A>4 Then
+      'A=4
+    'elseif A<-4 Then
+      'A=-4
+    'EndIf
+    
+    
+    OldE = E
+    MotorA.StartPower((A))
+    MotorB.StartPower((speed) * (-1))
+    MotorC.StartPower((speed) * (-1))
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    
+    avg = (encB + encC)/2
+        LCD.Write( 5, 25, A)   'color
+
+    
+    '---------------------------------------------------
+    Program.Delay(100)
+    LCD.Clear()
+    '------------------
+    If avg > DestEnc Then
+      exit = 1
+    EndIf
+  EndWhile
+EndFunction
+
+Function compasT1(in number dist, in number spd , in number tgtH)
+  
+  
+  kp = 0.8
+  kd = 0.2
+  sCenT = 0
+  sSens = 1.5
+  sMinT = -45
+  sMaxT = 45
+  sPwr = 75
+  Motor.ResetCount("BC")
+  Motor.ResetCount("A")
+
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  OldE = 0
+  exit = 0
+  curH = 0
+  curTA = 0 
+
+  While exit = 0
+    Gyro.getAngle(2, curH) 
+
+    E = tgtH - curH
+    P = E * kp
+    D = (E - OldE) * kd
+    sAdj = P + D
+    OldE = E
+
+    tgtTA = sCenT + (sAdj * sSens)
+    tgtTA = Math.Max(sMinT, Math.Min(sMaxT, tgtTA))
+
+    curTA = MotorA.GetTacho()
+
+    deltaTA = tgtTA - curTA
+
+    MotorA.StartDegrees(deltaTA, sPwr)
+
+    MotorB.StartPower(spd * -1)
+    MotorC.StartPower(spd * -1) 
+
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    avg = (encB + encC) / 2
+
+    If avg > dist Then
+      exit = 1
+    EndIf
+
+    Program.Delay(10)
+
+  EndWhile
+
+
+EndFunction
+
+
+
+
+Function compasT2(in number DestEnc, in number speed , in number curr_enc)
+  Motor.ResetCount("A")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  StartA = MotorA.GetTacho()
+
+  @OldE = 0
+  exit = 0
+  kp=0.4
+  kd=0.2
+  OldE=0
+  While exit = 0
+    enc= MotorA.GetTacho()
+    
+    E = curr_enc - enc
+    P = E * kp
+    D = (E - OldE) * kd
+    A = P + D
+
+    'if A>4 Then
+      'A=4
+    'elseif A<-4 Then
+      'A=-4
+    'EndIf
+    
+    
+    OldE = E
+    MotorA.StartPower((A))
+    MotorB.StartPower((speed) * (-1))
+    MotorC.StartPower((speed) * (-1))
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+    
+    avg = (encB + encC)/2
+        LCD.Write( 5, 25, A)   'color
+
+    
+    '---------------------------------------------------
+    Program.Delay(10)
+    LCD.Clear()
+    '------------------
+    If avg > DestEnc Then
+      exit = 1
+    EndIf
+  EndWhile
+EndFunction
+
+
+Function left1( in number speed)
+  gyro.reset(2)
+  Motor.ResetCount("A")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  StartA = MotorA.GetTacho()
+  
+  @OldE = 0
+  exit = 0
+  kp=2
+  kd=0.2
+  OldE=0
+      Motor.MovePower("A",40,40,"true")
+  While exit = 0
+    Gyro.getheading(2,0,angle1, angle2)
+    
+    E = 75 - angle1
+    P = E * kp
+    D = (E - OldE) * kd
+    A = P + D
+   OldE = E
+   
+    MotorB.StartPower((speed+A) * (-1))
+    MotorC.StartPower((speed+A) * (-1))
+
+ 
+    If angle1 >75 Then
+      exit = 1
+    EndIf
+    
+  EndWhile
+Motor.Stop("ABC","true")
+   Motor.MovePower("A" , -40, 40, "true")
+
+EndFunction
+
+Function vp( in number speed, in number DestEnc)
+  
+  
+  
+  
+  Motor.ResetCount("A")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  StartA = MotorA.GetTacho()
+  
+  @OldE = 0
+  exit = 0
+  kp=2
+  kd=0.2
+  OldE=0
+  While exit = 0
+
+    MotorB.StartPower((speed) * (-1))
+    MotorC.StartPower((speed) * (-1))
+    encB = Math.abs(MotorB.GetTacho() - StartB)
+    encC = Math.abs(MotorC.GetTacho() - StartC)
+        avg = (encB + encC)/2
+
+    If avg >destenc Then
+      exit = 1
+    EndIf
+    
+  EndWhile
+
+EndFunction
+
+function uni(in number B_M, in number C_M,in number DestEnc)
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  exit=0
+   While exit=0
+    MotorB.StartPower((B_M) * @kB)
+    MotorC.StartPower((C_M) * @kC)
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    avg = (Math.Abs(encB) + Math.Abs(encC))/2
+    If avg >= DestEnc Then
+      exit = 1
+    EndIf
+    
+  EndWhile
+  
+EndFunction
+
+Function accel_turn_wheel(in number totalAngle, in number accelAngle, in number decelAngle, in number minSpeed, in number maxSpeed, in string direction)
+  Check()
+  ' Сброс и инициализация
+  Motor.ResetCount("BC")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+
+  ' Определим, какой мотор активен, а какой неподвижен
+  activeMotor = ""
+  inactiveMotor = ""
+  
+  If direction = "left" Then
+    ' При повороте влево правое колесо активно, левое неподвижно
+    activeMotor = "C"
+    inactiveMotor = "B"
+    activeK = @kC
+    inactiveK = @kB
+  Else
+    ' При повороте вправо левое колесо активно, правое неподвижно
+    activeMotor = "B"
+    inactiveMotor = "C"
+    activeK = @kB
+    inactiveK = @kC
+  EndIf
+
+  While exit = 0
+    ' Текущий пройденный угол (только по активному мотору)
+    If activeMotor = "B" Then
+      currentAngle = Math.Abs(MotorB.GetTacho() - StartB)
+    Else
+      currentAngle = Math.Abs(MotorC.GetTacho() - StartC)
+    EndIf
+    
+    remainingAngle = totalAngle - currentAngle
+
+    ' Расчет целевой скорости для текущего шага с плавным переходом
+    current_target_speed = 0
+    If accelAngle > 0 And currentAngle < accelAngle Then
+      ' Косинусоидальное сглаживание ускорения: S-образная кривая
+      ratio = currentAngle / accelAngle
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * Math.Pi)) / 2
+    ElseIf decelAngle > 0 And remainingAngle < decelAngle Then
+      ' Косинусоидальное сглаживание замедления
+      ratio = remainingAngle / decelAngle
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * math.pi)) / 2
+    Else
+      ' Фаза постоянной скорости
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Ограничение рассчитанной скорости
+    If current_target_speed < minSpeed Then
+      current_target_speed = minSpeed
+    EndIf
+    If current_target_speed > maxSpeed Then
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Если почти завершили поворот, гарантируем минимальную скорость
+    If remainingAngle <= 2 Then
+      current_target_speed = minSpeed
+      If current_target_speed < 1 Then 
+        current_target_speed = 1 
+      EndIf
+    EndIf
+
+    ' Управление моторами - один мотор активен, другой неподвижен
+    If direction = "left" Then
+      MotorB.StartPower(0) ' Левое колесо неподвижно
+      MotorC.StartPower(current_target_speed * @kC) ' Правое колесо активно
+    Else
+      MotorB.StartPower(current_target_speed * @kB) ' Левое колесо активно
+      MotorC.StartPower(0) ' Правое колесо неподвижно
+    EndIf
+
+    ' Условие выхода
+    If currentAngle >= totalAngle Then
+      exit = 1
+    EndIf
+
+    Program.Delay(10)
+  EndWhile
+
+  StopPower()
+EndFunction
+
+Function accel_turn_wheel_back(in number totalAngle, in number accelAngle, in number decelAngle, in number minSpeed, in number maxSpeed, in string direction)
+  Check()
+  ' Сброс и инициализация
+  Motor.ResetCount("BC")
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+
+  ' Определим, какой мотор активен, а какой неподвижен
+  activeMotor = ""
+  inactiveMotor = ""
+  
+  If direction = "left" Then
+    ' При повороте влево назад правое колесо активно (назад), левое неподвижно
+    activeMotor = "C"
+    inactiveMotor = "B"
+    activeK = @kC
+    inactiveK = @kB
+  Else
+    ' При повороте вправо назад левое колесо активно (назад), правое неподвижно
+    activeMotor = "B"
+    inactiveMotor = "C"
+    activeK = @kB
+    inactiveK = @kC
+  EndIf
+
+  While exit = 0
+    ' Текущий пройденный угол (только по активному мотору)
+    If activeMotor = "B" Then
+      currentAngle = Math.Abs(MotorB.GetTacho() - StartB)
+    Else
+      currentAngle = Math.Abs(MotorC.GetTacho() - StartC)
+    EndIf
+    
+    remainingAngle = totalAngle - currentAngle
+
+    ' Расчет целевой скорости для текущего шага с плавным переходом
+    current_target_speed = 0
+    If accelAngle > 0 And currentAngle < accelAngle Then
+      ' Косинусоидальное сглаживание ускорения: S-образная кривая
+      ratio = currentAngle / accelAngle
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * Math.Pi)) / 2
+    ElseIf decelAngle > 0 And remainingAngle < decelAngle Then
+      ' Косинусоидальное сглаживание замедления
+      ratio = remainingAngle / decelAngle
+      current_target_speed = minSpeed + (maxSpeed - minSpeed) * (1 - math.Cos(ratio * math.pi)) / 2
+    Else
+      ' Фаза постоянной скорости
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Ограничение рассчитанной скорости
+    If current_target_speed < minSpeed Then
+      current_target_speed = minSpeed
+    EndIf
+    If current_target_speed > maxSpeed Then
+      current_target_speed = maxSpeed
+    EndIf
+
+    ' Если почти завершили поворот, гарантируем минимальную скорость
+    If remainingAngle <= 2 Then
+      current_target_speed = minSpeed
+      If current_target_speed < 1 Then 
+        current_target_speed = 1 
+      EndIf
+    EndIf
+
+    ' Управление моторами - один мотор активен (назад), другой неподвижен
+    If direction = "left" Then
+      MotorB.StartPower(0) ' Левое колесо неподвижно
+      MotorC.StartPower(-current_target_speed * @kC) ' Правое колесо активно назад
+    Else
+      MotorB.StartPower(-current_target_speed * @kB) ' Левое колесо активно назад
+      MotorC.StartPower(0) ' Правое колесо неподвижно
+    EndIf
+
+    ' Условие выхода
+    If currentAngle >= totalAngle Then
+      exit = 1
+    EndIf
+
+    Program.Delay(10)
+  EndWhile
+
+  StopPower()
+EndFunction
+Function time_vp(in number Milis)
+  Time.Reset2()
+  startTime = Time.Get2()
+  Check()
+
+  While Time.Get2() < Milis
+
+    MotorB.StartPower((@speed) * @kB)
+    MotorC.StartPower((@speed ) * @kC)
+    
+    
+  EndWhile
+EndFunction
+
+Function time_naz(in number Milis)
+  Time.Reset2()
+  startTime = Time.Get2()
+  Check()
+  ' Проблема - накопление энкодера
+  StartB = MotorB.GetTacho()
+  StartC = MotorC.GetTacho()
+  @OldE = 0
+  exit = 0
+  While Time.Get2() < Milis
+    encB = MotorB.GetTacho() - StartB
+    encC = MotorC.GetTacho() - StartC
+    E = encC * @kC - encB * @kB
+    P = E * @kp_align
+    D = (E - @OldE) * @kd_align
+    A = P + D
+    @OldE = E
+    SmoothSpeed()
+    MotorB.StartPower(-1*(@curr_speed - A) * @kB)
+    MotorC.StartPower(-1*(@curr_speed + A) * @kC)
+
+    
+    
+  EndWhile
+EndFunction
+
+Function SoloL(in number spd,in number DestEnc)
+  Motor.Stop("BC", "true")
+  StartB = MotorB.GetTacho()
+  exit=0
+   While exit=0
+    MotorB.StartPower((spd) * @kB)
+    encB = MotorB.GetTacho() - StartB
+    avg = Math.Abs(encB) 
+    If avg >= DestEnc Then
+      exit = 1
+    EndIf
+    
+  EndWhile
+  
+EndFunction
+
+  
+  
+
+Function SoloR(in number spd,in number DestEnc)
+    Motor.Stop("BC", "true")
+
+   StartC = MotorC.GetTacho()
+  exit=0
+   While exit=0
+        MotorC.StartPower((spd) * @kC)
+
+    encC = MotorC.GetTacho() - StartC
+    avg = Math.Abs(encC)
+    If avg >= DestEnc Then
+      exit = 1
+    EndIf
+    
+  EndWhile
+  
+
+EndFunction
+
+
+
+sub nazad_trezubec_pr
+   Motor.ResetCount("B")
+   Motor.ResetCount("C")
+
+  
+  Start1 = MotorB.GetTacho()
+  Start2 = MotorC.GetTacho()
+  
+  gyro.reset(3)
+   Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+      Gyro.getHeading(3,0, rel, abs )
+
+    sfc=(rel-30)*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("B",80+1.8*sfc)
+    Motor.StartPower("C",-80+1.8*sfc)
+
+    if rel <= -25 then
+      exit=1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+ 
+  Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+   Gyro.getHeading(3,0, rel, abs )
+
+    sfc=(rel-30)*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("B",80-1.4*sfc)
+    Motor.StartPower("C",-80-1.4*sfc)
+
+    if rel > -5 then
+      exit=1
+    EndIf
+  EndWhile
+ Motor.Stop("BC","true")
+  exit=0
+ 
+  accel_move_back(90,0,100,20,80)
+ Motor.Stop("BC","false")
+
+    LCD.Update()
+Program.Delay(200)
+
+
+
+
+  
+EndSub
+
+
+
+
+
+sub nazad_trezubec_pr2
+   Motor.ResetCount("B")
+   Motor.ResetCount("C")
+
+  
+  Start1 = MotorB.GetTacho()
+  Start2 = MotorC.GetTacho()
+  
+  gyro.reset(3)
+   Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+      Gyro.getHeading(3,0, rel, abs )
+
+    sfc=(rel-30)*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("B",40+sfc)
+    Motor.StartPower("C",-40+sfc)
+
+    if rel < -30 then
+      exit=1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+  Motor.Stop("bc","false")
+  accel_move_back(200,50,30,25,25)
+  stop() 
+  Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+      Gyro.getHeading(3,0, rel, abs )
+
+    sfc=rel*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("BC",-sfc)
+    if rel > 0 then
+      exit=1
+    EndIf
+  EndWhile
+  exit=0
+  
+
+  Motor.Stop("bc","true")
+  
+    LCD.Clear()
+  while exit=0
+    LCD.Write( 5, 25,  avg)   
+
+    
+  Motor.StartPower("B",50)
+  Motor.StartPower("C",-50)
+  Start1 = MotorB.GetTacho()
+  Start2 = MotorC.GetTacho()
+    avg = (Start1 -  Start2)/2
+        Program.Delay(10)
+    if avg > 600 then
+      exit=1
+    EndIf
+    Program.Delay(10)
+    LCD.Update()
+  Endwhile
+    Motor.Stop("bc","false")
+
+  
+  
+  
+EndSub
+
+sub nazad_trezubec_lv
+   Motor.ResetCount("B")
+   Motor.ResetCount("C")
+
+  
+  Start1 = MotorB.GetTacho()
+  Start2 = MotorC.GetTacho()
+  
+  gyro.reset(3)
+   Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+      Gyro.getHeading(3,0, rel, abs )
+
+    sfc=(rel+30)*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("B",80+1.4*sfc)
+    Motor.StartPower("C",-80+1.4*sfc)
+
+    if rel >= 27 then
+      exit=1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+ 
+  Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+   Gyro.getHeading(3,0, rel, abs )
+
+    sfc=(rel+30)*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("B",80-1.4*sfc)
+    Motor.StartPower("C",-80-1.4*sfc)
+
+    if rel <=8 then
+      exit=1
+    EndIf
+  EndWhile
+ Motor.Stop("BC","true")
+  exit=0
+ 
+
+  
+    LCD.Write( 5, 25,  avg)   
+
+    
+  accel_move_back(70,0,100,20,80)
+ Motor.Stop("BC","false")
+
+    LCD.Update()
+  Program.Delay(200)
+
+
+  
+  
+EndSub
+
+sub nazad_trezubec_lv2
+   Motor.ResetCount("B")
+   Motor.ResetCount("C")
+
+  
+  Start1 = MotorB.GetTacho()
+  Start2 = MotorC.GetTacho()
+  
+  gyro.reset(3)
+   Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+      Gyro.getHeading(3,0, rel, abs )
+
+    sfc=(rel+30)*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("B",40+sfc)
+    Motor.StartPower("C",-40+sfc)
+
+    if rel >= 30 then
+      exit=1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+  Motor.Stop("bc","false")
+  accel_move_back(270,50,30,25,25)
+  stop() 
+  Gyro.getHeading(3,0, rel, abs )
+
+  exit=0
+  while exit=0
+      Gyro.getHeading(3,0, rel, abs )
+
+    sfc=rel*3
+    if sfc> 30 then
+      sfc=30
+    elseif sfc<-30 then
+      sfc=-30
+    EndIf
+    
+    Motor.StartPower("BC",-sfc*0.9)
+    if rel <=0 then
+      exit=1
+    EndIf
+  EndWhile
+    Motor.Stop("bc","true")
+ 
+  exit=0
+ 
+
+  
+    LCD.Clear()
+  while exit=0
+    LCD.Write( 5, 25,  avg)   
+
+    
+  Motor.StartPower("B",50)
+  Motor.StartPower("C",-50)
+  Start1 = MotorB.GetTacho()
+  Start2 = MotorC.GetTacho()
+    avg = (Start1 -  Start2)/2
+        Program.Delay(10)
+    if avg > 600 then
+      exit=1
+    EndIf
+    Program.Delay(10)
+    LCD.Update()
+  Endwhile
+    Motor.Stop("bc","false")
+
+  
+  
+  
+EndSub
