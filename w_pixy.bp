@@ -1,0 +1,498 @@
+folder "prjs" "WRO2025_"
+
+import "Mods\Color"
+import "Mods\Gyro"
+import "Mods\HTColorV2"
+import "Mods\HTCompass"
+import "Mods\HTIRSeeker"
+import "Mods\Light"
+import "Mods\NXTColor"
+import "Mods\NXTLight"
+import "Mods\Pixy2"
+import "Mods\Touch"
+import "Mods\Ultrasonic"
+import "Mods\Tool"
+import "Mods\AdvMtCtrls"
+include "KZmotion"
+
+'---------------------peremen-----------------
+orang=0
+
+curr_speed=30
+speed= 70
+
+'kp= 0.2
+'kd= 0.1
+'''---------------------settings----------------
+Gyro.reset(3)
+LCD.Clear()
+MiddleBase()
+'Thread.Run = ekran
+LCD.Write( 15, 20, EV3.BatteryVoltage)
+timer2= Time.Get5()
+
+'---------------------func and sub------------
+Function colibr(in number current)
+  
+  Gyro.getHeading(3,0, rel, abs )
+  
+  exit=0
+  While exit=0
+    Gyro.getHeading(3,0, rel, abs )
+    
+    sfc=rel*4
+    If sfc> 22 Then
+      sfc=22
+    ElseIf sfc<-22 Then
+      sfc=-22
+    EndIf
+    
+    Motor.StartPower("B",-sfc)
+    If rel = current Then
+      exit=1
+    EndIf
+    Program.Delay(5)
+  EndWhile
+  Motor.Stop("bc","true")
+  Program.Delay(100)
+EndFunction
+
+Sub close_D
+  MotorD.StartPower(-100)
+  Program.Delay(550)
+  Motor.Stop("D","true")
+EndSub
+
+Sub open_D
+  MotorD.StartPower(70)
+  Program.Delay(150)
+  Motor.Stop("D","true")
+EndSub
+
+Sub ekran
+  While 1=1
+    '-----------------------settings------------------
+    Gyro.getHeading(3,0, rel, abs )
+    'Color.getRGBW(1,r,g,b,w)
+    'Ultrasonic.getCm(2, sonic)
+    'Pixy2.getSignature(4, 1,  x,y, w, h)
+    'Pixy2.getSignature(4, 2,  x2,y2, w2, h2)
+    timer2= Time.Get2()
+    
+    'LCD.Write( 5, 10, EV3.BatteryVoltage)
+    LCD.Write( 5, 25, rel)
+    'LCD.Write( 5, 35, sonic)   'sonic
+    'LCD.Write( 80, 20, x)  'ball
+    'LCD.Write( 80, 50, x2)  'fiolka
+    
+    '---------------------------------------------------
+    Program.Delay(100)
+    LCD.Clear()
+    '---------------------------------------------------
+  EndWhile
+EndSub
+
+Sub bez
+  accel_move(230,100,100,30,60)
+  Motor.Stop("BC","true")
+EndSub
+
+Sub 1_p
+  MotorA.StartPower(-100)
+  open_D()
+  accel_move(510,150,200,30,90)
+  Motor.Stop("BC","true")
+  close_D()
+  Program.Delay(100)
+  accel_move_back(185,100,150,20,60)
+  Motor.Stop("BC","false")
+  
+EndSub
+
+Sub 2_p
+  MotorA.StartPower(-100)
+  accel_move(690,250,0,32,90)
+  Thread.run =open_D
+  accel_move(200,0,200,30,90)
+  Motor.Stop("BC","false")
+  close_D()
+  Program.Delay(100)
+  MotorA.StartPower(0)
+  
+  accel_move_back(980,200,300,20,90)
+  
+  Motor.Stop("BC","false")
+  curr_speed=20
+  speed=20
+  time_naz(200)
+  Motor.Stop("BC","false")
+  
+  Program.Delay(900)
+  accel_move(245,100,100,30,60)
+  Motor.Stop("BC","true")
+EndSub
+
+Sub 3_p
+  MotorA.StartPower(-100)
+  Thread.run =open_D
+  accel_move(230,100,100,30,90)
+  Motor.Stop("BC","true")
+  Program.Delay(200)
+  accel_turn_wheel(160, 80, 80, 40, 80, "right")
+  
+  Motor.Stop("BC","true")
+  Program.Delay(100)
+  
+  accel_move(240,100,100,30,90)
+  Motor.Stop("BC","true")
+  Program.Delay(100)
+  close_D()
+  
+  accel_move_back(200,100,100,30,60)
+  Motor.Stop("BC","true")
+  
+  accel_turn_wheel_back(215, 80, 120, 40, 70, "right")
+  Motor.Stop("BC","true")
+  MotorA.StartPower(0)
+  
+EndSub
+
+Sub 4_p
+  MotorA.StartPower(-100)
+  accel_move(230,100,100,30,90)
+  Motor.Stop("BC","true")
+  Program.Delay(200)
+  accel_turn_wheel(160, 80, 80, 40, 80, "right")
+  
+  Motor.Stop("BC","true")
+  Program.Delay(100)
+  
+  accel_move(240,100,100,30,90)
+  Motor.Stop("BC","true")
+  
+  Program.Delay(600)
+  Thread.run =open_D
+  
+  accel_turn_wheel(80, 20, 60, 40, 60, "left")
+  Motor.Stop("BC","true")
+  Program.Delay(200)
+  accel_move(100,50,50,30,90)
+  Motor.Stop("BC","false")
+  Program.Delay(100)
+  close_D()
+  
+  accel_turn_wheel(370, 80, 80, 40, 80, "left")
+  Motor.Stop("BC","true")
+  Program.Delay(100)
+  MotorA.StartPower(0)
+  
+  accel_move(310,150,150,30,90)
+  curr_speed=30
+  speed=30
+  time_vp(400)
+  Motor.Stop("BC","false")
+  Program.Delay(100)
+  accel_turn_wheel_back(353, 150, 150, 30, 80, "left")
+  Motor.Stop("BC","true")
+  Program.Delay(100)
+  accel_move_back(700,200,200,20,90)
+  Motor.Stop("BC","false")
+  
+  time_naz(500)
+  
+  Motor.Stop("BC","false")
+  
+  Program.Delay(900)
+  accel_move(250,100,100,30,60)
+  Motor.Stop("BC","true")
+  
+EndSub
+
+Sub orange
+  
+  oran=1
+  open_D()
+  MotorA.StartPower(-100)
+  
+  accel_move(770,150,150,50,90)
+  stop()
+  
+  Program.Delay(400)
+  accel_turn_wheel(715, 100, 100, 40, 80, "right")
+  Program.Delay(100)
+  
+  accel_move(600,100,0,50,90)
+  
+  time_vp(1000)
+  stop()
+  close_D()
+  MotorA.StartPower(0)
+  
+  accel_move_back(100,50,50,30,50)
+  accel_turn_wheel_back(760, 150, 150, 30, 80, "right")
+  stop()
+  
+  curr_speed=30
+  speed=40
+  time_naz(1200)
+  
+  Motor.Stop("BC","false")
+  
+  accel_move(230,100,100,30,60)
+  Motor.Stop("BC","true")
+EndSub
+Sub odin
+  time_vp(500)
+  Motor.Stop("BC","false")
+  MotorA.StartPower(-100)
+  Program.Delay(600)
+  
+  MotorA.StartPower(0)
+  
+EndSub
+Sub patern_centr
+  
+  accel_move(870,200,200,30,100)
+  Motor.Stop("BC","false")
+  
+  curr_speed=30
+  speed=40
+  time_vp(1000)
+  
+  odin()
+  accel_move_back(900,200,300,30,100)
+  Motor.Stop("BC","false")
+  Program.Delay(700)
+  End()
+  
+EndSub
+
+Sub patern_levo
+  accel_turn_wheel_back(110, 50, 50, 40, 70, "right")
+  Motor.Stop("BC","true")
+  accel_move(50,50,0,30,95)
+  uni(95,55, 300)
+  
+  uni(100,100, 560)
+  Motor.Stop("bc","false")
+  Program.Delay(500)
+  Gyro.reset(3)
+  Gyro.getHeading(3,0,rel,abs)
+  
+  odin()
+  
+  'nazad
+  nazad_trezubec_lv()
+  Program.Delay(700)
+  
+  End()
+  
+EndSub
+
+Sub patern_pravo
+  accel_turn_wheel_back(120, 50, 50, 40, 70, "left")
+  Motor.Stop("BC","true")
+  accel_move(50,50,0,30,95)
+  uni(55,95, 300)
+  
+  uni(100,100, 630)
+  Motor.Stop("bc","false")
+  Program.Delay(900)
+  Gyro.reset(3)
+  Gyro.getHeading(3,0,rel,abs)
+  
+  odin()
+  
+  ''nazad
+  
+  nazad_trezubec_pr()
+  Program.Delay(700)
+  End()
+  
+EndSub
+
+Sub krug
+  MotorA.StartPower(-10)
+  
+  accel_move(200,100,100,40,70)
+  accel_turn_wheel(450, 100, 100, 40, 70, "right")
+  Motor.Stop("bc","true")
+  accel_move(40,40,0,40,80)
+  Motor.Stop("bc","false")
+  Program.Delay(100)
+  speed=40
+  time_vp(700)
+  Motor.Stop("bc","false")
+  
+  accel_move_back(115,20,80,10,45)
+  stop()
+  
+  accel_turn_wheel(320, 100, 100, 40, 80, "right")
+  stop()
+  
+  accel_move(300,100,0,40,90)
+  speed=40
+  time_vp(700)
+  Motor.Stop("bc","false")
+  
+  accel_move_back(115,20,80,10,45)
+  stop()
+  
+  accel_turn_wheel(300, 100, 100, 40, 80, "right")
+  stop()
+  
+  uni(60,100, 290)
+  time_vp(600)
+  speed=40
+  time_vp(500)
+  Motor.Stop("bc","false")
+  accel_move_back(115,20,80,10,45)
+  stop()
+  
+  accel_turn_wheel(230, 100, 100, 40, 80, "right")
+  stop()
+  
+  accel_move(150,150,0,30,100)
+  uni(100,100, 860)
+  Motor.Stop("bc","false")
+  Program.Delay(400)
+  odin()
+  
+  ''nazad
+  
+  nazad_trezubec_lv()
+  Program.Delay(700)
+  
+  End()
+EndSub
+
+Sub End
+  timer2=Time.Get5()
+  
+  If timer2>100000 Then
+    While timer2<107000
+      
+      timer2=Time.Get5()
+      
+    EndWhile
+    
+    MotorA.StartPower(-10)
+    
+    accel_move(870,200,200,40,100)
+    Motor.Stop("BC","false")
+    
+    curr_speed=50
+    speed=50
+    
+    odin()
+    MotorA.StartPower(-10)
+    
+    accel_move_back(115,20,80,24,55)
+    stop()
+    
+    accel_turn_wheel(300, 100, 100, 40, 80, "right")
+    Motor.Stop("BC", "true")
+    time_vp(600)
+    Motor.Stop("bc","false")
+    
+    accel_move_back(115,20,80,24,55)
+    stop()
+    
+    accel_turn_wheel(260, 100, 100, 40, 80, "right")
+    stop()
+    accel_move(150,150,0,40,100)
+    
+    uni(100,100, 700)
+    Motor.Stop("bc","false")
+    Program.Delay(800)
+    accel_move_back(115,20,80,24,45)
+    stop()
+    
+    accel_turn_wheel(260, 100, 100, 40, 80, "right")
+    stop()
+    accel_move(100,100,0,40,100)
+    
+    uni(100,100, 200)
+    Motor.Stop("bc","false")
+    Program.Delay(800)
+    accel_move_back(115,20,80,24,45)
+    stop()
+    
+    accel_turn_wheel(260, 100, 100, 40, 80, "right")
+    stop()
+    accel_move(50,50,0,30,90)
+    
+    uni(100,40, 750)
+    Motor.Stop("bc","false")
+    uni(35,100, 600)
+    Motor.Stop("bc","false")
+    Motor.StartPower("B",-100)
+    Motor.StartPower("C",100)
+    
+    While timer2<118000
+      timer2=Time.Get5()
+      
+    EndWhile
+    MotorA.StartPower(-100)
+    Program.Delay(10000)
+    
+  EndIf
+  
+EndSub
+
+''=======code==========
+avg=0
+
+cent=0
+
+bez()
+While timer2<25000
+  timer2= Time.Get2()
+  
+EndWhile
+krug()
+n=1
+k=0
+While 1=1
+  timer2=Time.Get5()
+  
+  pixy2.getSignature(1,1,x,y,w,h)
+  if y<90 then
+  If x<85 and x>10 Then
+    Speaker.Play(100,"left")
+    n=1
+  ElseIf x>146 And x<240 Then
+    n=2
+    Speaker.Play(100,"right") 
+  ElseIf x>85 and x<146 then
+    n=3
+  Speaker.Play(100,"Forward") 
+    EndIf
+    
+  EndIf
+  
+  
+  
+  
+  If k>1 Then
+    krug()
+    k=0
+    n=2
+  ElseIf n=2 Then
+        patern_pravo()
+
+    k=k+1
+    n=1
+  ElseIf n=1 Then
+    patern_levo()
+    k=k+1
+    n=2
+  elseif n=3 Then
+    patern_centr()
+    k=k+1
+    n=2
+
+  EndIf
+  
+EndWhile
+
