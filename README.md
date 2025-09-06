@@ -48,7 +48,7 @@ These are **illustrations** of how the library moves/controls. If you put the im
 - **Cosine-smoothed accel/decel** (speed vs distance):  
   ![accel_move_profile](accel_move_profile.png)
 - **Acceleration smoothness** (finite difference):  
-  ![accel_move_accel_estimate](ccel_move_accel_estimate.png)
+  ![accel_move_accel_estimate](accel_move_accel_estimate.png)
 - **Triangular vs trapezoidal velocity profiles**:  
   ![tri_vs_trap](tri_vs_trap.png)
 - **PD heading step response (concept)**:  
