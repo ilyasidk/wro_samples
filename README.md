@@ -3,7 +3,7 @@
 I decided to **open-source my core motion library** used across RoboSports prep and matches.  
 This repo keeps the essentials: **line following, gyro-stabilized straight & turns, cosine-smoothed ramps, encoder-based distance control, color/compass utilities**. The goal is to help teams plug-and-play and tune faster.
 
----
+---/
 
 ## Highlights
 
